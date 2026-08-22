@@ -6,7 +6,8 @@
   <title>Family TV Dashboard - Prototype 1.4</title>
   
   <!-- Google API Library Scripts -->
-  <script src="https://apis.google.com/js/api.js" async defer></script>
+  <script src="https://apis.google.com/js/api.js" async defer onload="gapiLoaded()"></script>
+  <script src="https://accounts.google.com/gsi/client" async defer onload="gisLoaded()"></script>
 
   <style>
     :root {
@@ -418,111 +419,93 @@
     </div>
   </footer>
 
-  <!-- Google Calendar & Interactive Tasks Script (TV Device Flow Fix) -->
+  <!-- Google Calendar & Interactive Tasks Script (Web OAuth) -->
   <script>
-    const CLIENT_ID = '868723742445-cl34rn10tmbau2lhihbvtot37nbu1vvb.apps.googleusercontent.com';
-    const API_KEY = 'AIzaSyCgGzPMXAndHLoUVdYbZGojOiTPORl1h-A';
+    const CLIENT_ID = '868723742445-rfoetfopvol8ol6orjb07fotd3r12s9o.apps.googleusercontent.com';
+    const API_KEY = 'AIzaSyCgGzPMXAndHLoUVdYBZGojOiTPORl1h-A';
     const SCOPES = 'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/tasks';
 
     const DISCOVERY_DOCS = [
-      "https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest",
-      "https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest"
+      'https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest',
+      'https://www.googleapis.com/discovery/v1/apis/tasks/v1/rest'
     ];
 
     const CALENDAR_COLORS = {
-      "1": "#a4bdfc", "2": "#7ae7bf", "3": "#dbadff", "4": "#ff887c",
-      "5": "#fbd15b", "6": "#ffb878", "7": "#46d6db", "8": "#e1e1e1",
-      "9": "#5484ed", "10": "#51b749", "11": "#dc2127"
+      '1': '#a4bdfc', '2': '#7ae7bf', '3': '#dbadff', '4': '#ff887c',
+      '5': '#fbd15b', '6': '#ffb878', '7': '#46d6db', '8': '#e1e1e1',
+      '9': '#5484ed', '10': '#51b749', '11': '#dc2127'
     };
 
-    let storedToken = localStorage.getItem('gapi_access_token');
-    let pollInterval = null;
+    let tokenClient = null;
+    let gapiReady = false;
+    let gisReady = false;
+    let storedToken = sessionStorage.getItem('gapi_access_token');
 
     function gapiLoaded() {
       gapi.load('client', async () => {
-        await gapi.client.init({
-          apiKey: API_KEY,
-          discoveryDocs: DISCOVERY_DOCS,
-        });
+        try {
+          await gapi.client.init({
+            apiKey: API_KEY,
+            discoveryDocs: DISCOVERY_DOCS
+          });
+          gapiReady = true;
+          enableGoogleButton();
 
-        if (storedToken) {
-          gapi.client.setToken({ access_token: storedToken });
-          markConnectedUI();
-          syncGoogleData();
+          if (storedToken) {
+            gapi.client.setToken({ access_token: storedToken });
+            markConnectedUI();
+            syncGoogleData();
+          }
+        } catch (err) {
+          console.error('Google API initialization failed:', err);
         }
       });
+    }
+
+    function gisLoaded() {
+      tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: handleTokenResponse
+      });
+      gisReady = true;
+      enableGoogleButton();
+    }
+
+    function enableGoogleButton() {
+      const btn = document.getElementById('auth-btn');
+      if (btn && gapiReady && gisReady) btn.disabled = false;
+    }
+
+    function handleAuthClick() {
+      if (storedToken) return;
+
+      if (!tokenClient || !gapiReady || !gisReady) {
+        document.getElementById('auth-btn').innerText = 'Google is still loading...';
+        return;
+      }
+
+      tokenClient.requestAccessToken({ prompt: 'consent' });
+    }
+
+    function handleTokenResponse(response) {
+      if (response.error) {
+        console.error('Google authorization error:', response);
+        document.getElementById('auth-btn').innerText = 'Google connection failed';
+        return;
+      }
+
+      storedToken = response.access_token;
+      sessionStorage.setItem('gapi_access_token', storedToken);
+      gapi.client.setToken({ access_token: storedToken });
+      markConnectedUI();
+      syncGoogleData();
     }
 
     function markConnectedUI() {
       const btn = document.getElementById('auth-btn');
       btn.innerText = 'Connected';
       btn.classList.add('connected');
-    }
-
-    // Step A: Request Device Code & Show Prompt on TV
-    async function handleAuthClick() {
-      if (storedToken) return;
-
-      try {
-        const response = await fetch('https://oauth2.googleapis.com/device/code', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: new URLSearchParams({
-            client_id: CLIENT_ID,
-            scope: SCOPES
-          })
-        });
-
-        const data = await response.json();
-
-        if (data.user_code) {
-          const btn = document.getElementById('auth-btn');
-          btn.innerText = `Go to ${data.verification_url} & enter code: ${data.user_code}`;
-          
-          // Step B: Poll Google until user grants permission on phone/PC
-          startPollingForToken(data.device_code, data.interval || 5);
-        } else {
-          alert('Failed to get device code. Ensure this Client ID is set to "TVs and Limited Input devices" in Google Cloud Console.');
-        }
-      } catch (err) {
-        console.error("Device Auth Request Error:", err);
-      }
-    }
-
-    // Step C: Background Polling for Authorization
-    function startPollingForToken(deviceCode, intervalSec) {
-      if (pollInterval) clearInterval(pollInterval);
-
-      pollInterval = setInterval(async () => {
-        try {
-          const response = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-              client_id: CLIENT_ID,
-              device_code: deviceCode,
-              grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
-            })
-          });
-
-          const data = await response.json();
-
-          if (data.access_token) {
-            clearInterval(pollInterval);
-            localStorage.setItem('gapi_access_token', data.access_token);
-            storedToken = data.access_token;
-            gapi.client.setToken({ access_token: storedToken });
-            
-            markConnectedUI();
-            syncGoogleData();
-          } else if (data.error && data.error !== 'authorization_pending') {
-            clearInterval(pollInterval);
-            document.getElementById('auth-btn').innerText = 'Auth Failed. Retry?';
-          }
-        } catch (err) {
-          console.error("Polling Error:", err);
-        }
-      }, intervalSec * 1000);
     }
 
     async function syncGoogleData() {
@@ -534,50 +517,50 @@
       try {
         const calListResp = await gapi.client.calendar.calendarList.list();
         const calendars = calListResp.result.items || [];
-        let targetCal = calendars.find(c => c.summary.toLowerCase().includes('family')) || { id: 'primary' };
+        const targetCal = calendars.find(c => (c.summary || '').toLowerCase().includes('family')) || { id: 'primary' };
 
         const now = new Date();
         const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
         const endOfPeriod = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000).toISOString();
 
         const eventsResp = await gapi.client.calendar.events.list({
-          'calendarId': targetCal.id,
-          'timeMin': startOfDay,
-          'timeMax': endOfPeriod,
-          'singleEvents': true,
-          'orderBy': 'startTime'
+          calendarId: targetCal.id,
+          timeMin: startOfDay,
+          timeMax: endOfPeriod,
+          singleEvents: true,
+          orderBy: 'startTime'
         });
 
         const events = eventsResp.result.items || [];
         document.querySelectorAll('.time-event').forEach(el => el.innerHTML = '');
 
         events.forEach(e => {
-          if (e.start.dateTime) {
-            const eventDate = new Date(e.start.dateTime);
-            if (eventDate.toDateString() === now.toDateString()) {
-              const hour = eventDate.getHours();
-              const row = document.querySelector(`.time-row[data-hour="${hour}"] .time-event`);
-              if (row) {
-                const hexColor = e.colorId && CALENDAR_COLORS[e.colorId] ? CALENDAR_COLORS[e.colorId] : 'var(--bg-card-inner)';
-                const borderStyle = e.colorId && CALENDAR_COLORS[e.colorId] ? '' : 'border: 1px solid var(--accent-cyan);';
-                row.innerHTML += `<span class="event-pill" style="background-color: ${hexColor}; ${borderStyle}">${e.summary}</span>`;
-              }
-            }
-          }
+          if (!e.start || !e.start.dateTime) return;
+          const eventDate = new Date(e.start.dateTime);
+          if (eventDate.toDateString() !== now.toDateString()) return;
+
+          const row = document.querySelector(`.time-row[data-hour="${eventDate.getHours()}"] .time-event`);
+          if (!row) return;
+
+          const hexColor = e.colorId && CALENDAR_COLORS[e.colorId] ? CALENDAR_COLORS[e.colorId] : 'var(--bg-card-inner)';
+          const borderStyle = e.colorId && CALENDAR_COLORS[e.colorId] ? '' : 'border: 1px solid var(--accent-cyan);';
+          const pill = document.createElement('span');
+          pill.className = 'event-pill';
+          pill.style.cssText = `background-color: ${hexColor}; ${borderStyle}`;
+          pill.textContent = e.summary || 'Untitled event';
+          row.appendChild(pill);
         });
 
         if (events.length > 0) {
-          const tickerFormatted = events.map(e => {
+          document.getElementById('ticker-text').innerText = events.map(e => {
             const dateStr = new Date(e.start.dateTime || e.start.date).toLocaleDateString([], { month: 'short', day: 'numeric' });
-            return `${dateStr}: ${e.summary}`;
+            return `${dateStr}: ${e.summary || 'Untitled event'}`;
           }).join(' | ');
-          document.getElementById('ticker-text').innerText = tickerFormatted;
         }
-
       } catch (err) {
-        console.error("Calendar Sync Error:", err);
+        console.error('Calendar Sync Error:', err);
         if (err.status === 401) {
-          localStorage.removeItem('gapi_access_token');
+          sessionStorage.removeItem('gapi_access_token');
           storedToken = null;
           document.getElementById('auth-btn').innerText = 'Reconnect Google';
           document.getElementById('auth-btn').classList.remove('connected');
@@ -589,34 +572,39 @@
       try {
         const taskListsResp = await gapi.client.tasks.tasklists.list();
         const lists = taskListsResp.result.items || [];
-
-        const mapping = {
-          'sofie': 'list-sofie',
-          'mace': 'list-mace',
-          'jj': 'list-jj',
-          'tasks': 'list-tasks',
-          'mom': 'list-tasks'
-        };
+        const mapping = { 'sofie': 'list-sofie', 'mace': 'list-mace', 'jj': 'list-jj', 'tasks': 'list-tasks', 'mom': 'list-tasks' };
 
         for (const list of lists) {
-          const titleKey = list.title.toLowerCase().trim();
-          if (mapping[titleKey]) {
-            const targetContainer = document.getElementById(mapping[titleKey]);
-            const tasksResp = await gapi.client.tasks.tasks.list({ tasklist: list.id, showCompleted: false });
-            const tasks = tasksResp.result.items || [];
+          const titleKey = (list.title || '').toLowerCase().trim();
+          const targetContainerId = mapping[titleKey];
+          if (!targetContainerId) continue;
 
-            if (targetContainer) {
-              targetContainer.innerHTML = tasks.map(t => `
-                <div class="chore-item" id="task-item-${t.id}">
-                  <div class="checkbox" onclick="completeTask('${list.id}', '${t.id}')"></div>
-                  <span>${t.title}</span>
-                </div>
-              `).join('');
-            }
-          }
+          const targetContainer = document.getElementById(targetContainerId);
+          if (!targetContainer) continue;
+
+          const tasksResp = await gapi.client.tasks.tasks.list({ tasklist: list.id, showCompleted: false });
+          const tasks = tasksResp.result.items || [];
+          targetContainer.innerHTML = '';
+
+          tasks.forEach(t => {
+            const item = document.createElement('div');
+            item.className = 'chore-item';
+            item.id = `task-item-${t.id}`;
+
+            const checkbox = document.createElement('div');
+            checkbox.className = 'checkbox';
+            checkbox.onclick = () => completeTask(list.id, t.id);
+
+            const text = document.createElement('span');
+            text.textContent = t.title || 'Untitled task';
+
+            item.appendChild(checkbox);
+            item.appendChild(text);
+            targetContainer.appendChild(item);
+          });
         }
       } catch (err) {
-        console.error("Tasks Sync Error:", err);
+        console.error('Tasks Sync Error:', err);
       }
     }
 
@@ -624,17 +612,19 @@
       const el = document.getElementById(`task-item-${taskId}`);
       if (el) {
         el.classList.add('completed');
-        el.querySelector('.checkbox').innerText = '✓';
+        const checkbox = el.querySelector('.checkbox');
+        if (checkbox) checkbox.innerText = '✓';
       }
 
       try {
         await gapi.client.tasks.tasks.patch({
           tasklist: listId,
           task: taskId,
-          status: 'completed'
+          resource: { status: 'completed' }
         });
+        setTimeout(syncGoogleTasks, 500);
       } catch (err) {
-        console.error("Failed to complete task on Google Tasks:", err);
+        console.error('Failed to complete task on Google Tasks:', err);
       }
     }
 
@@ -643,6 +633,7 @@
       document.getElementById('clock-time').textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       document.getElementById('clock-date').textContent = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
     }
+
     setInterval(updateClock, 1000);
     updateClock();
 
@@ -650,7 +641,6 @@
       if (storedToken) syncGoogleData();
     }, 5 * 60 * 1000);
   </script>
-  <script src="https://apis.google.com/js/api.js" onload="gapiLoaded()"></script>
 
 </body>
 </html>
